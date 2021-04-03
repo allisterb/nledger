@@ -55,6 +55,11 @@ namespace NLedger.Utility.ServiceAPI
             return ExecutingCommand(command, CancellationToken.None);
         }
 
+        public ServiceResponse ExecuteJournalAction(Action<Journals.Journal> action)
+        {
+            return ExecutingJournalAction(action, CancellationToken.None);
+        }
+
         public Task<ServiceResponse> ExecuteCommandAsync(string command, CancellationToken token = default(CancellationToken))
         {
             return Task.Run(() => ExecutingCommand(command, token));
@@ -110,6 +115,14 @@ namespace NLedger.Utility.ServiceAPI
                 throw new InvalidOperationException("Session is not active");
 
             return new ServiceResponse(this, command, token);
+        }
+
+        private ServiceResponse ExecutingJournalAction(Action<Journals.Journal> action, CancellationToken token)
+        {
+            if (!IsActive)
+                throw new InvalidOperationException("Session is not active");
+
+            return new ServiceResponse(this, action, token);
         }
 
         private void CloseSession()

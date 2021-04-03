@@ -35,6 +35,17 @@ namespace NLedger.Utility.ServiceAPI
                 MainApplicationContext = InitializeResponse(command, token);
         }
 
+        public ServiceResponse(ServiceSession serviceSession, Action<Journals.Journal> action, CancellationToken token)
+        {
+            if (serviceSession == null)
+                throw new ArgumentNullException(nameof(serviceSession));
+            if (action == null)
+                throw new ArgumentNullException(nameof(action));
+
+            ServiceSession = serviceSession;
+            using (new ScopeTimeTracker(time => ExecutionTime = time))
+                MainApplicationContext = InitializeResponse(action, token);
+        }
         public ServiceSession ServiceSession { get; }
         public MainApplicationContext MainApplicationContext { get; }
         public int Status { get; private set; } = 1;
@@ -74,6 +85,51 @@ namespace NLedger.Utility.ServiceAPI
                         catch (Exception err)
                         {
                             ServiceSession.GlobalScope.ReportError(err);
+                        }
+
+                        OutputText = memoryStreamManager.GetOutputText();
+                        ErrorText = memoryStreamManager.GetErrorText();
+                        return context;
+                    }
+                }
+            }
+        }
+
+        private MainApplicationContext InitializeResponse(Action<Journals.Journal> action, CancellationToken token)
+        {
+            // [DM] This is a quick workaround to fix multithreading issues caused by original non-thread-safe legder code.
+            // When ExecuteCommandWrapper is executing, it changes the state of GlobalScope object, it can also change the state of 
+            // accounts and xacts (depending on the command). However, it properly restores the original state when it finishes.
+            // Therefore, the quick solution is to limit parallel requests with only one running executor at the moment.
+            // The right solution would be cloning GlobalScope object for every thread (or, fixing thread-unsafe code).
+            lock (ServiceSession)
+            {
+                using (var memoryStreamManager = new MemoryStreamManager())
+                {
+                    var context = ServiceSession.ServiceEngine.CloneContext(ServiceSession.MainApplicationContext, memoryStreamManager);
+                    token.Register(() => context.CancellationSignal = CaughtSignalEnum.INTERRUPTED);
+                    context.Logger = new Logger();
+                    context.ErrorContext = new ErrorContext();
+                    using (context.AcquireCurrentThread())
+                    {
+                        var scope = ServiceSession.GlobalScope;
+                        try
+                        {
+                            Status = 1;
+                            scope.PushReport();
+                            action(ServiceSession.GlobalScope.Session.Journal);
+                            scope.PopReport();
+                            Status = 0;
+                            
+                        }
+                        catch (CountError errors)
+                        {
+                            Status = errors.Count;
+                        }
+                        catch (Exception err)
+                        {
+                            scope.PopReport();
+                            scope.ReportError(err);
                         }
 
                         OutputText = memoryStreamManager.GetOutputText();
